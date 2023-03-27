@@ -11,6 +11,11 @@ This script is used to perform monocular visual odometry (VO) using a single cam
 
 # Results
 
-![Result of ORB feature detection](picture/out2.png "orb1")
-![Result of ORB feature matching](picture/out1.png "orb2")
-![Result of triangulation](picture/out3.png "triangulate")
+Result of ORB feature detection (Green is ORB, Red point is GT)
+![](picture/out2.png "orb1")
+
+Result of ORB feature matching
+![](picture/out1.png "orb2")
+
+Result of triangulation (Blue is our result (still wrong), Red is GT)
+![](picture/out3.png "triangulate")
