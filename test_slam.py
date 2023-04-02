@@ -14,15 +14,19 @@ from util import *
 
 cv2.useOptimized()
 
-def esimate_pose(kp0, kp1, cam_mtx):
-    E, mask = cv2.findEssentialMat(kp0, kp1, cam_mtx, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
+def esimate_pose(kp1, kp0, cam_mtx):
+    E, mask = cv2.findEssentialMat(kp1, kp0, cam_mtx, method=cv2.RANSAC, prob=0.999, threshold=0.4, mask=None)
 
+    good_count = np.count_nonzero(mask.ravel() == 1)
+    good_ratio = good_count / kp0.shape[0]
+
+    print("good count= {}, ratio= {}".format(good_count, good_ratio))
     kp0 = kp0[mask.ravel() == 1]
     kp1 = kp1[mask.ravel() == 1]
     
     # recover pose
     _, Rmat, tvec, mask = cv2.recoverPose(E, kp0, kp1, cam_mtx)
-    print("Estimate pose from Emat: R: \n{}, \nt: \n{}".format(Rmat, tvec))
+    print("Estimate pose from Emat: \nR: \n{}, \nt: \n{}".format(Rmat, tvec))
 
     return Rmat, tvec
 
@@ -85,22 +89,42 @@ def main():
 
     # get camera(projection) matrix as ground truth
     mat = scipy.io.loadmat('/home/spiral/share/dataset/Dinosaur/dino_Ps.mat')
-    P_gts = mat['P'][0]
-    K_gts = []
-    R_gts = []
-    t_gts = []
-    for i, P in enumerate(P_gts):
+    Ps_gt = mat['P'][0]
+    Ks_gt = []
+    Rs_gt = []
+    ts_gt = []
+    for i, P in enumerate(Ps_gt):
         # Decompose [K,R,t] from projection matrix
         out = cv2.decomposeProjectionMatrix(P)
         K, R, t = out[:3]
-        K_gts.append(K)
-        R_gts.append(R)
-        t_gts.append(t)
-        print("P[{}]= {}".format(i, P))
-        print("K= {}, \nR= {}, \nt= {}".format(K, R, t))
+        Ks_gt.append(K)
+        Rs_gt.append(R)
+        ts_gt.append(t)
 
-    mtx = K_gts[0]
+    mtx = Ks_gt[0]
     print("Intrinsic matrix: {}".format(mtx))
+
+    # normalize intrinsic matrix
+    f0 = mtx[2, 2]
+    fx = mtx[0, 0] / f0
+    fy = mtx[1, 1] / f0
+    cx = mtx[0, 2] / f0
+    cy = mtx[1, 2] / f0
+    print("fx: {:.3f}".format(fx))
+    print("fy: {:.3f}".format(fy))
+    print("cx: {:.3f}".format(cx))
+    print("cy: {:.3f}".format(cy))
+    print("======")
+
+    # set some value for mtx
+    w = 720
+    h = 576
+    cx = w / 2
+    cy = h / 2
+    f = 800
+    mtx = np.array([[f, 0.0, cx], 
+                    [0.0, f, cy],
+                    [0.0, 0.0, 1.0]])
 
     # get tracked 2D points as ground truth
     # array size: 4984 x (36 x 2)
@@ -156,7 +180,6 @@ def main():
         else:
             # save parameter as train data
             img0 = img1
-            gray0 = gray1
             kp0 = kp1
             des0 = des1
             X0 = X1
@@ -179,10 +202,9 @@ def main():
             # sort matches according to distance
             matches = sorted(matches, key = lambda x:x.distance)
 
-            kp0_np = np.array([kp0[idx].pt for idx in range(len(kp0))], dtype=np.float32)
-            kp1_np = np.array([kp1[idx].pt for idx in range(len(kp1))], dtype=np.float32)
-
             # draw keypoints
+            good0 = []
+            good1 = []
             num_keypoints = 100
             disp = gray1.copy()
             disp = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
@@ -192,38 +214,42 @@ def main():
                 distance = m.distance
                 idx0 = m.queryIdx
                 idx1 = m.trainIdx
-                pt0 = kp0_np[idx0].astype(np.int32)
-                pt1 = kp1_np[idx1].astype(np.int32)
+                pt0 = np.array(kp0[idx0].pt, dtype=np.float32)
+                pt1 = np.array(kp1[idx1].pt, dtype=np.float32)
+
+                good0.append(pt0)
+                good1.append(pt1)
 
                 # change radius of circle depending on descriptor distance
                 radius = int(math.exp(distance/15))
-                cv2.line(disp, (pt0[0], pt0[1]), (pt1[0], pt1[1]), [0,255,255], 1)
-                cv2.circle(disp, (pt1[0], pt1[1]), radius, [0,255,0], thickness=2)
+                cv2.line(disp, (int(pt0[0]), int(pt0[1])), (int(pt1[0]), int(pt1[1])), [0,255,255], 1)
+                cv2.circle(disp, (int(pt1[0]), int(pt1[1])), radius, [0,255,0], thickness=2)
             
             # draw 2d points of ground truth
-            for i_point, pts in enumerate(points_list):
+            for pts in points_list:
                 pt = pts[frame_id - 1]
                 x, y = pt[:2]
                 if x > 0 and y > 0:
                     cv2.circle(disp, (int(x), int(y)), 2, [0,0,255], thickness=2)
             
+            good0 = np.float32(good0)
+            good1 = np.float32(good1)
+
             # draw matches
             matches = cv2.drawMatches(img0, kp0, img1, kp1, matches[:num_keypoints], None)
 
             # estimate pose
-            R_rel, t_rel = esimate_pose(kp0_np, kp1_np, mtx)
+            R_rel, t_rel = esimate_pose(good1, good0, mtx)
 
             # triangulate points
-            X1 = triangulate_points(R_rel, t_rel, kp0_np, kp1_np, mtx)
+            X1 = triangulate_points(R_rel, t_rel, good0, good1, mtx)
 
-            # calculate 4x4 homogeneous matrix
-            t_scale = 1.0
+            # get 4x4 homogeneous matrix
             P1 = np.hstack((R_rel, t_rel))
             P1 = np.vstack((P1, [0, 0, 0, 1]))
-            # print("P1: {}".format(P1))
 
-            if P0 is None or X0 is None:
-                # first 2 frames
+            t_scale = 1.0
+            if P0 is None or X0 is None: # first frame
                 X1_w = translate_points(X1, R_cam, t_cam)
                 cloud.extend(X1_w)
                 continue
@@ -237,11 +263,11 @@ def main():
             # collect estimated camera pose
             cam_pos.append([R_cam, t_cam])
 
-            # collect ground truth
-            cam_pos_gt.append([R_gts[frame_id-1], t_gts[frame_id-1]])
+            # collect ground truth camera pose
+            cam_pos_gt.append([Rs_gt[frame_id-1], ts_gt[frame_id-1]])
 
             # translate 3D points from camera coordinate to world coordinate
-            print("X1: {}, relative_scale: {}".format(X1.shape, t_scale))
+            print("relative_scale: {}, X1.shape: {}".format(t_scale, X1.shape))
             X1_w = translate_points(X1 / t_scale, R_cam, t_cam)
             cloud.extend(X1_w)
 
